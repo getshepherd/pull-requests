@@ -54,7 +54,8 @@
     .glyph .conflict { position: absolute; right: -5px; bottom: -5px; width: 12px; height: 12px; color: var(--danger); fill: var(--shell); stroke-width: 2.5; }
     .open .glyph { color: var(--success); }
     .draft .glyph { color: var(--text-faint); }
-    .merged .glyph { color: var(--accent); }
+    /* t3code's violet-600 and violet-300/90: GitHub's merged purple, not the theme's accent */
+    .merged .glyph { color: light-dark(#7c3aed, rgb(196 181 253 / 0.9)); }
     .closed .glyph { color: var(--danger); }
     .more { display: flex; justify-content: center; margin: 24px 0 8px; }
     .lines { flex: 1; min-width: 0; }
@@ -550,6 +551,16 @@
   // ponytail: asked again every five minutes while seen; webhooks would need a server the hosts can reach
   setInterval(() => document.visibilityState === 'visible' && load(), 5 * 60 * 1000);
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && load());
+  // Shepherd says which folder its shown pane is in, when the page loads and each time it is shown: the list goes to
+  // that project, all of them when the folder isn't a repository's
+  const follow = async (state) => {
+    if (!state?.dir) return;
+    pick.project = await call('repo-of', { dir: state.dir }).catch(() => '');
+    keep();
+    render();
+  };
+  addEventListener('shepherd', (e) => follow(e.detail));
+  follow(window.shepherd);
   load();
 </script>
 </body>

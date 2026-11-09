@@ -119,6 +119,12 @@ func main() {
 	paddock.Command(app, "repos", "The repositories the list reads: the backend's terminals' and those added", func(_ *paddock.Ctx, _ struct{}) ([]Repo, error) {
 		return repos(added)
 	})
+	paddock.Command(app, "repo-of", "The repository a folder is in, a worktree's included, as host/path", func(_ *paddock.Ctx, in struct {
+		Dir string `json:"dir" help:"a folder in a checkout"`
+	}) (string, error) {
+		r, err := fromDir(in.Dir)
+		return r.key(), err
+	})
 	paddock.Command(app, "add-repo", "Add a repository by its folder, its URL or host/owner/name", func(ctx *paddock.Ctx, in struct {
 		Repo string `json:"repo" help:"a folder, a remote URL, or host/owner/name (github.com if no host)"`
 	}) (Repo, error) {
@@ -157,20 +163,6 @@ func main() {
 		ctx.Emit("repos", in.Repo)
 		return in.Repo, nil
 	})
-
-	for _, a := range []struct{ name, help string }{
-		{"close", "Close a pull or merge request"},
-		{"merge", "Merge a pull or merge request now"},
-		{"ready", "Mark a draft ready for review"},
-	} {
-		paddock.Command(app, a.name, a.help, func(ctx *paddock.Ctx, in Target) (Target, error) {
-			t, err := act(in, a.name)
-			if err == nil {
-				ctx.Emit("acted", t)
-			}
-			return t, err
-		})
-	}
 
 	for _, a := range []struct{ name, help string }{
 		{"close", "Close a pull or merge request"},
