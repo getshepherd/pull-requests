@@ -12,7 +12,9 @@
     .lc { flex: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     button.icon > .lc, .bar .lc { width: 16px; height: 16px; }
     h1 { margin: 0 0 16px; font-size: 15px; font-weight: 500; }
-    .bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    /* the search and the filters stay at the top as the list scrolls under them */
+    .bar { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; align-items: center; margin: 0 -12px 8px; padding: 10px 12px; background: var(--shell); border-bottom: 1px solid transparent; }
+    .bar.stuck { border-bottom-color: var(--border); }
     .search { flex: 1; position: relative; min-width: 0; }
     .search > .lc { position: absolute; left: 10px; top: 50%; translate: 0 -50%; color: var(--text-muted); }
     .search input { width: 100%; padding-left: 32px; }
@@ -529,6 +531,8 @@
     $('#errors ul').replaceChildren(...listing.errors.map((f) => el('li', {}, el('span', {}, f.repo, ' ', el('code', {}, f.error)))));
   }
 
+  // a line under the bar once the list runs under it
+  new IntersectionObserver(([e]) => $('.bar').classList.toggle('stuck', !e.isIntersecting)).observe($('h1'));
   $('#q').addEventListener('input', render);
   $('#refresh').onclick = () => load(true);
   on('repos', () => load(true));
