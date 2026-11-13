@@ -91,6 +91,8 @@ const page = 30
 
 func main() {
 	app := paddock.New("pull-requests", "Pull and merge requests of every repository you work in, on one page", web)
+	// its page is about everything, not one workspace: the sidebar's, in place of the panes
+	app.Show(paddock.Sidebar)
 	added := filepath.Join(app.Dir(), "repos.json")
 	c := &cache{dir: app.Dir(), at: map[string]Listing{}, asking: map[string]bool{}}
 
