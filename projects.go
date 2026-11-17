@@ -108,24 +108,25 @@ func projects() ([]string, error) {
 	var dirs []string
 	switch backend := shepherdBackend(); backend {
 	case "herdr":
-		out, err := run("", "herdr", "workspace", "list")
+		// panes, not workspaces: herdr gives a workspace its worktree only when it saw one there, and leaves the rest
+		// (a workspace opened on a plain folder, then cd'd into a repo) without a repo_root
+		out, err := run("", "herdr", "pane", "list")
 		if err != nil {
 			return nil, err
 		}
 		var r struct {
 			Result struct {
-				Workspaces []struct {
-					Worktree struct {
-						RepoRoot string `json:"repo_root"`
-					} `json:"worktree"`
-				} `json:"workspaces"`
+				Panes []struct {
+					Cwd        string `json:"cwd"`
+					Foreground string `json:"foreground_cwd"`
+				} `json:"panes"`
 			} `json:"result"`
 		}
 		if err := json.Unmarshal([]byte(out), &r); err != nil {
 			return nil, err
 		}
-		for _, w := range r.Result.Workspaces {
-			dirs = append(dirs, w.Worktree.RepoRoot)
+		for _, p := range r.Result.Panes {
+			dirs = append(dirs, cmp.Or(p.Foreground, p.Cwd))
 		}
 	case "rex":
 		// ponytail: a session's folder is its first window's focused block's, as Shepherd names a Rex workspace;
