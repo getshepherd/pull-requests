@@ -94,7 +94,7 @@ func main() {
 	// its page is about everything, not one workspace: the sidebar's, in place of the panes
 	app.Show(paddock.Sidebar)
 	added := filepath.Join(app.Dir(), "repos.json")
-	c := &cache{dir: app.Dir(), at: map[string]Listing{}, asking: map[string]bool{}}
+	c := newCache(app.Dir())
 
 	paddock.Command(app, "list", "Pull requests of every repository, newest change first", func(_ *paddock.Ctx, in struct {
 		State   string `json:"state" help:"open (default), merged, closed or all"`
@@ -106,17 +106,27 @@ func main() {
 			return Listing{}, fmt.Errorf("state is one of %v", states)
 		}
 		limit := min(max(cmp.Or(in.Limit, page), 1), 500)
-		if l, ok := c.get(state, limit); ok && !in.Refresh {
-			if time.Since(l.At) >= fresh {
-				go func() {
-					if l, err := c.ask(state, limit, added); err == nil {
-						app.Emit("listed", l) // open pages take it in place of the one they show
-					}
-				}()
-			}
-			return l, nil
+		repos, err := repos(added)
+		if err != nil {
+			return Listing{}, err
 		}
-		return c.ask(state, limit, added)
+		l, missing, stale := c.listing(repos, state, limit)
+		if in.Refresh {
+			missing, stale = repos, nil
+		}
+		// only the repositories never seen are waited for; the rest show their last answer, asked again behind it
+		if len(missing) > 0 {
+			c.ask(missing, state, limit)
+			l, _, _ = c.listing(repos, state, limit)
+		}
+		if len(stale) > 0 {
+			go func() {
+				c.ask(stale, state, limit)
+				l, _, _ := c.listing(repos, state, limit)
+				app.Emit("listed", l) // open pages take it in place of the one they show
+			}()
+		}
+		return l, nil
 	})
 	paddock.Command(app, "repos", "The repositories the list reads: the backend's terminals' and those added", func(_ *paddock.Ctx, _ struct{}) ([]Repo, error) {
 		return repos(added)
@@ -189,6 +199,21 @@ func main() {
 	app.Run()
 }
 
+// remotes are the repositories of the main checkouts seen, by folder: a checkout's remote is read once.
+// ponytail: a remote changed while the service runs is seen after its restart.
+var remotes sync.Map
+
+func remoteOf(dir string) (Repo, error) {
+	if r, ok := remotes.Load(dir); ok {
+		return r.(Repo), nil
+	}
+	r, err := fromDir(dir)
+	if err == nil {
+		remotes.Store(dir, r)
+	}
+	return r, err
+}
+
 // repos are the added ones and the backend's terminals', each once, sorted by path.
 func repos(added string) ([]Repo, error) {
 	list, err := load(added)
@@ -202,7 +227,7 @@ func repos(added string) ([]Repo, error) {
 	// ponytail: a backend that can't be asked (not running) leaves only the added ones, silently
 	dirs, _ := projects()
 	for _, d := range dirs {
-		if r, err := fromDir(d); err == nil && !seen[r.key()] {
+		if r, err := remoteOf(d); err == nil && !seen[r.key()] {
 			seen[r.key()] = true
 			list = append(list, r)
 		}
@@ -211,74 +236,91 @@ func repos(added string) ([]Repo, error) {
 	return list, nil
 }
 
-// cache keeps each state's last listing in memory and on disk, so a page opened after a restart shows the last one
-// at once too.
+// cache keeps each repository's last answer for each state and limit, in memory and on disk, so a page shows the
+// repositories it has seen at once, those of another herdr session's too, and asks the hosts behind it.
 type cache struct {
 	dir    string
 	mu     sync.Mutex
-	at     map[string]Listing
-	asking map[string]bool // a state being asked for, so one ask runs at a time
+	at     map[string]answer // by entry: repository, state and limit
+	asking map[string]bool   // entries being asked for, so one ask runs at a time
 }
 
-// A listing is kept by its state and its limit, `open-30`.
-func key(state string, limit int) string { return fmt.Sprintf("%s-%d", state, limit) }
+// answer is one repository's pull requests for a state and limit, or why they couldn't be read.
+type answer struct {
+	PRs   []PR      `json:"prs"`
+	Error string    `json:"error,omitempty"`
+	At    time.Time `json:"at"`
+}
 
-func (c *cache) file(key string) string { return filepath.Join(c.dir, "listing-"+key+".json") }
+func entry(r Repo, state string, limit int) string {
+	return fmt.Sprintf("%s %s-%d", r.key(), state, limit)
+}
 
-func (c *cache) get(state string, limit int) (Listing, bool) {
-	k := key(state, limit)
+func newCache(dir string) *cache {
+	c := &cache{dir: dir, at: map[string]answer{}, asking: map[string]bool{}}
+	if b, err := os.ReadFile(c.file()); err == nil {
+		_ = json.Unmarshal(b, &c.at)
+	}
+	// the listings an older version kept whole, one a state and limit
+	old, _ := filepath.Glob(filepath.Join(dir, "listing-*.json"))
+	for _, f := range old {
+		os.Remove(f)
+	}
+	return c
+}
+
+func (c *cache) file() string { return filepath.Join(c.dir, "answers.json") }
+
+// listing puts the answers kept for repos together, and says which repositories have none and which are older than
+// fresh.
+func (c *cache) listing(repos []Repo, state string, limit int) (l Listing, missing, stale []Repo) {
+	l = Listing{State: state, Limit: limit, PRs: []PR{}, Repos: repos, Errors: []Failure{}}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if l, ok := c.at[k]; ok {
-		return l, true
+	for _, r := range repos {
+		a, ok := c.at[entry(r, state, limit)]
+		switch {
+		case !ok:
+			missing = append(missing, r)
+			continue
+		case time.Since(a.At) >= fresh:
+			stale = append(stale, r)
+		}
+		if a.Error != "" {
+			l.Errors = append(l.Errors, Failure{Repo: r.key(), Error: a.Error})
+		}
+		l.More = l.More || len(a.PRs) >= limit
+		l.PRs = append(l.PRs, a.PRs...)
+		// the listing is as old as its oldest answer
+		if l.At.IsZero() || a.At.Before(l.At) {
+			l.At = a.At
+		}
 	}
-	var l Listing
-	b, err := os.ReadFile(c.file(k))
-	if err != nil || json.Unmarshal(b, &l) != nil {
-		return l, false
-	}
-	c.at[k] = l
-	return l, true
+	slices.SortFunc(l.PRs, func(a, b PR) int { return b.Updated.Compare(a.Updated) })
+	return l, missing, stale
 }
 
-// ask lists state anew and keeps it. An ask already running for it is waited for rather than run twice.
-func (c *cache) ask(state string, limit int, added string) (Listing, error) {
-	k := key(state, limit)
-	c.mu.Lock()
-	for c.asking[k] {
-		c.mu.Unlock()
-		time.Sleep(100 * time.Millisecond) // ponytail: polls; a sync.Cond if this ever matters
-		c.mu.Lock()
-	}
-	c.asking[k] = true
-	c.mu.Unlock()
-	defer func() { c.mu.Lock(); delete(c.asking, k); c.mu.Unlock() }()
-
-	repos, err := repos(added)
-	if err != nil {
-		return Listing{}, err
-	}
-	l := list(repos, state, limit)
-	c.mu.Lock()
-	c.at[k] = l
-	c.mu.Unlock()
-	if b, err := json.Marshal(l); err == nil {
-		_ = os.WriteFile(c.file(k), b, 0o600)
-	}
-	return l, nil
-}
-
-// list asks every repository's host at once.
-func list(repos []Repo, state string, limit int) Listing {
-	l := Listing{State: state, Limit: limit, PRs: []PR{}, Repos: repos, Errors: []Failure{}, At: time.Now()}
-	var (
-		mu sync.Mutex
-		wg sync.WaitGroup
-	)
+// ask asks every host of repos at once and keeps the answers. A repository already being asked for is waited for
+// rather than asked twice.
+func (c *cache) ask(repos []Repo, state string, limit int) {
+	var wg sync.WaitGroup
 	for _, r := range repos {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			k := entry(r, state, limit)
+			c.mu.Lock()
+			if c.asking[k] {
+				for c.asking[k] {
+					c.mu.Unlock()
+					time.Sleep(100 * time.Millisecond) // ponytail: polls; a sync.Cond if this ever matters
+					c.mu.Lock()
+				}
+				c.mu.Unlock()
+				return
+			}
+			c.asking[k] = true
+			c.mu.Unlock()
 			var prs []PR
 			var err error
 			if r.Provider == "github" {
@@ -286,18 +328,23 @@ func list(repos []Repo, state string, limit int) Listing {
 			} else {
 				prs, err = gitlab(r, state, limit)
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			l.More = l.More || len(prs) >= limit
+			a := answer{PRs: prs, At: time.Now()}
 			if err != nil {
-				l.Errors = append(l.Errors, Failure{Repo: r.key(), Error: err.Error()})
+				a.Error = err.Error()
 			}
-			l.PRs = append(l.PRs, prs...)
+			c.mu.Lock()
+			c.at[k] = a
+			delete(c.asking, k)
+			c.mu.Unlock()
 		}()
 	}
 	wg.Wait()
-	slices.SortFunc(l.PRs, func(a, b PR) int { return b.Updated.Compare(a.Updated) })
-	return l
+	c.mu.Lock()
+	b, err := json.Marshal(c.at)
+	c.mu.Unlock()
+	if err == nil {
+		_ = os.WriteFile(c.file(), b, 0o600)
+	}
 }
 
 func load(path string) ([]Repo, error) {

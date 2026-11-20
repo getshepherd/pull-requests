@@ -560,7 +560,8 @@
     const now = state.session?.socket ?? '';
     if (now !== socket) {
       socket = now;
-      if (await call('session', { socket }).catch(() => false)) await load(true);
+      // the repositories seen in that session before show at once, from the service's answers
+      if (await call('session', { socket }).catch(() => false)) await load();
     }
     if (!state.dir) return;
     pick.project = await call('repo-of', { dir: state.dir }).catch(() => '');

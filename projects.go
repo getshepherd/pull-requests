@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -213,20 +214,27 @@ func projects() ([]string, error) {
 	default:
 		return nil, fmt.Errorf("unknown backend %q", backend)
 	}
-	seen := map[string]bool{}
-	list := []string{}
-	for _, d := range dirs {
+	// many panes share a folder; each folder is asked once, all of them at once
+	slices.Sort(dirs)
+	dirs = slices.Compact(dirs)
+	roots := make([]string, len(dirs))
+	var wg sync.WaitGroup
+	for i, d := range dirs {
 		if d = strings.TrimSpace(d); d == "" {
 			continue
 		}
-		// the common git dir is the main checkout's .git, for a worktree too
-		out, err := run(d, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
-		root := filepath.Dir(strings.TrimSpace(out))
-		if err != nil || filepath.Base(strings.TrimSpace(out)) != ".git" || seen[root] {
-			continue
-		}
-		seen[root] = true
-		list = append(list, root)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// the common git dir is the main checkout's .git, for a worktree too
+			out, err := run(d, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+			if out = strings.TrimSpace(out); err == nil && filepath.Base(out) == ".git" {
+				roots[i] = filepath.Dir(out)
+			}
+		}()
 	}
+	wg.Wait()
+	slices.Sort(roots)
+	list := slices.Compact(slices.DeleteFunc(roots, func(r string) bool { return r == "" }))
 	return list, nil
 }
