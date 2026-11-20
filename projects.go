@@ -14,21 +14,42 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	paddock "github.com/getshepherd/extensions"
 )
 
-// shepherdBackend is the backend Shepherd shows, from its settings beside the extensions folder.
-func shepherdBackend() string {
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(paddock.ExtensionsDir()), "settings.json"))
+// shepherdSettings are Shepherd's, beside the extensions folder: the backend it shows and, on herdr, the session's
+// socket (none for the default session).
+func shepherdSettings() (backend, socket string) {
+	b, _ := os.ReadFile(filepath.Join(filepath.Dir(paddock.ExtensionsDir()), "settings.json"))
 	var s struct {
 		Backend string `json:"backend"`
+		Socket  string `json:"herdr_socket"`
 	}
-	if err != nil || json.Unmarshal(b, &s) != nil || s.Backend == "" {
-		return "herdr" // Shepherd's default
+	json.Unmarshal(b, &s)
+	return cmp.Or(s.Backend, "herdr"), s.Socket // herdr is Shepherd's default
+}
+
+// told is whether a page said which herdr session Shepherd shows (the `session` command); until one does, and for
+// the CLI, Shepherd's settings say.
+var told atomic.Bool
+
+// useSession points the `herdr` commands at the session with this API socket, the default one for none, and says
+// whether that is another than before.
+// ponytail: one session for the whole service, in its environment; two Shepherd windows on two sessions would take
+// turns. A socket per call, down to `run`, when that is wanted.
+func useSession(socket string) bool {
+	if os.Getenv("HERDR_SOCKET_PATH") == socket {
+		return false
 	}
-	return s.Backend
+	if socket == "" {
+		os.Unsetenv("HERDR_SOCKET_PATH")
+	} else {
+		os.Setenv("HERDR_SOCKET_PATH", socket)
+	}
+	return true
 }
 
 var loginPath sync.Once
@@ -106,7 +127,11 @@ func field(out, path string) string {
 func projects() ([]string, error) {
 	usePATH()
 	var dirs []string
-	switch backend := shepherdBackend(); backend {
+	backend, socket := shepherdSettings()
+	if !told.Load() {
+		useSession(socket)
+	}
+	switch backend {
 	case "herdr":
 		// panes, not workspaces: herdr gives a workspace its worktree only when it saw one there, and leaves the rest
 		// (a workspace opened on a plain folder, then cd'd into a repo) without a repo_root

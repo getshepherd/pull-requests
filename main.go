@@ -121,6 +121,12 @@ func main() {
 	paddock.Command(app, "repos", "The repositories the list reads: the backend's terminals' and those added", func(_ *paddock.Ctx, _ struct{}) ([]Repo, error) {
 		return repos(added)
 	})
+	paddock.Command(app, "session", "Which herdr session the repositories are read from; true when it is another than before", func(_ *paddock.Ctx, in struct {
+		Socket string `json:"socket" help:"its API socket, as Shepherd's page event gives it; none for the default session"`
+	}) (bool, error) {
+		told.Store(true)
+		return useSession(in.Socket), nil
+	})
 	paddock.Command(app, "repo-of", "The repository a folder is in, a worktree's included, as host/path", func(_ *paddock.Ctx, in struct {
 		Dir string `json:"dir" help:"a folder in a checkout"`
 	}) (string, error) {

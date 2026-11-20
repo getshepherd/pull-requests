@@ -551,10 +551,18 @@
   // ponytail: asked again every five minutes while seen; webhooks would need a server the hosts can reach
   setInterval(() => document.visibilityState === 'visible' && load(), 5 * 60 * 1000);
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && load());
-  // Shepherd says which folder its shown pane is in, when the page loads and each time it is shown: the list goes to
-  // that project, all of them when the folder isn't a repository's
+  // Shepherd says which herdr session it shows and which folder its shown pane is in, when the page loads, each time it
+  // is shown and when either changes: another session's repositories are read anew, and the list goes to the folder's
+  // project, all of them when the folder isn't a repository's
+  let socket;
   const follow = async (state) => {
-    if (!state?.dir) return;
+    if (!state) return;
+    const now = state.session?.socket ?? '';
+    if (now !== socket) {
+      socket = now;
+      if (await call('session', { socket }).catch(() => false)) await load(true);
+    }
+    if (!state.dir) return;
     pick.project = await call('repo-of', { dir: state.dir }).catch(() => '');
     keep();
     render();
