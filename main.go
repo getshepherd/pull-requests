@@ -137,12 +137,6 @@ func main() {
 		told.Store(true)
 		return useSession(in.Socket), nil
 	})
-	paddock.Command(app, "repo-of", "The repository a folder is in, a worktree's included, as host/path", func(_ *paddock.Ctx, in struct {
-		Dir string `json:"dir" help:"a folder in a checkout"`
-	}) (string, error) {
-		r, err := fromDir(in.Dir)
-		return r.key(), err
-	})
 	paddock.Command(app, "add-repo", "Add a repository by its folder, its URL or host/owner/name", func(ctx *paddock.Ctx, in struct {
 		Repo string `json:"repo" help:"a folder, a remote URL, or host/owner/name (github.com if no host)"`
 	}) (Repo, error) {
